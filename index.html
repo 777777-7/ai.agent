@@ -68,6 +68,12 @@
   .lplayer .pname{flex:1;font-weight:600;font-size:14px;}
   .lplayer .pbadge{font-size:10px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;}
   .lplayer.host .pbadge{color:var(--gold);}
+  .lplayer.empty{border-style:dashed;opacity:.65;}
+  .lplayer.empty .pdot{background:#2a3050;}
+  .lplayer .dim{color:#5a6088;font-style:italic;}
+  .kickBtn{background:#3a1f2a;color:#f87171;border:1px solid #6b2a3a;
+    padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;flex:0 0 auto;}
+  .kickBtn:hover{background:#5a2436;}
 
   /* game screen */
   .gwrap{display:flex;flex-direction:column;gap:12px;width:100%;max-width:640px;margin:0 auto;}
@@ -308,6 +314,7 @@ function hostRoom(name, count){
     // host = player 0
     game = createGame(count);
     game.players[0].name = name;
+    game.players[0].joined = true;
     myIndex = 0;
     showLobby();
     const url = location.origin + location.pathname + '?room=' + roomCode;
@@ -324,6 +331,8 @@ function hostRoom(name, count){
           conn.send({type:'full'}); conn.close(); return;
         }
         game.players[idx].name = data.name;
+        game.players[idx].joined = true;
+        game.players[idx].offline = false;
         hostConns.push({conn, idx, name:data.name});
         conn.send({type:'welcome', yourIndex:idx});
         renderLobby(); broadcastLobby();
@@ -332,15 +341,30 @@ function hostRoom(name, count){
         if(rec) hostHandleMove(rec.idx, data);
       } else if(data.type === 'leave'){
         const rec = hostConns.find(h=>h.conn===conn);
-        if(rec){ game.players[rec.idx].offline = true; renderLobby(); broadcastState(); }
+        if(rec){
+          if(netMode === 'lobby'){
+            game.players[rec.idx].joined = false;
+            game.players[rec.idx].offline = false;
+            game.players[rec.idx].name = game.players[rec.idx].label;
+          } else {
+            game.players[rec.idx].offline = true;
+          }
+          renderLobby(); broadcastLobby(); broadcastState();
+        }
       }
     });
     conn.on('close', () => {
       const rec = hostConns.find(h=>h.conn===conn);
       if(rec){
-        game.players[rec.idx].offline = true;
+        if(netMode === 'lobby'){
+          game.players[rec.idx].joined = false;
+          game.players[rec.idx].offline = false;
+          game.players[rec.idx].name = game.players[rec.idx].label;
+        } else {
+          game.players[rec.idx].offline = true;
+        }
         hostConns = hostConns.filter(h=>h.conn!==conn);
-        renderLobby(); broadcastState();
+        renderLobby(); broadcastLobby(); broadcastState();
       }
     });
   });
@@ -357,24 +381,46 @@ function hostRoom(name, count){
 
 function nextFreeSlot(){
   for(let i=1;i<game.players.length;i++){
-    const taken = hostConns.some(h=>h.idx===i);
-    if(!taken && !game.players[i].offline) return i;
+    if(!game.players[i].joined) return i;
   }
   return null;
 }
 
+function kickPlayer(idx){
+  if(!isHost || idx===0 || idx==null) return;
+  const rec = hostConns.find(h=>h.idx===idx);
+  if(rec){
+    try{ rec.conn.send({type:'kicked'}); rec.conn.close(); }catch(e){}
+  }
+  hostConns = hostConns.filter(h=>h.idx!==idx);
+  game.players[idx].joined = false;
+  game.players[idx].offline = false;
+  game.players[idx].name = game.players[idx].label;
+  renderLobby(); broadcastLobby();
+}
+
 document.getElementById('startBtn').onclick = () => {
   if(!isHost) return;
+  const active = game.players.filter(p=>p.joined);
+  if(active.length < 2) return;
+  // remap original slot index -> new index for guests
+  const oldToNew = {};
+  active.forEach((p,newIdx)=>{ oldToNew[game.players.indexOf(p)] = newIdx; });
+  game.players = active;
+  game.turn = 0;
   netMode='game';
   document.getElementById('gameModeLabel').textContent='ONLINE';
   showScreen('game');
-  broadcastStart();
+  const snap = serializeState();
+  for(const h of hostConns){
+    h.conn.send({type:'start', gameState:snap, yourIndex: oldToNew[h.idx] ?? 0});
+  }
   afterStateChange();
 };
 
 function broadcastLobby(){
   const players = game.players.map((p,i)=>({
-    name:p.name||p.label, color:p.color, isHost:(i===0), offline:!!p.offline
+    name:p.name||p.label, color:p.color, isHost:(i===0), joined:!!p.joined, offline:!!p.offline
   }));
   for(const h of hostConns) h.conn.send({type:'lobby', players, youAre:null});
 }
@@ -410,7 +456,12 @@ function joinRoom(name, code){
         showScreen('lobby');
       }
       else if(data.type === 'full'){ setStatus('This room is full.','err'); }
+      else if(data.type === 'kicked'){
+        setStatus('You were removed from the room.','err');
+        showScreen('menu');
+      }
       else if(data.type === 'start' || data.type === 'state'){
+        if(data.type === 'start' && typeof data.yourIndex === 'number') myIndex = data.yourIndex;
         netMode='game';
         document.getElementById('gameModeLabel').textContent='ONLINE';
         deserializeState(data.gameState);
@@ -449,7 +500,7 @@ function joinRoom(name, code){
 function createGame(count){
   const preset = PRESETS[count];
   return {
-    players: preset.map(p => ({...p, name:p.label, walls:count===2?10:5, offline:false})),
+    players: preset.map(p => ({...p, name:p.label, walls:count===2?10:5, offline:false, joined:false})),
     hWalls: new Set(),
     vWalls: new Set(),
     turn: 0,
@@ -459,8 +510,8 @@ function createGame(count){
 function startLocalGame(count){
   netMode='game'; isHost=true; myIndex=0;
   game = createGame(count);
-  game.players[0].name = myName;
-  for(let i=1;i<game.players.length;i++) game.players[i].name = 'Player ' + (i+1);
+  game.players[0].name = myName; game.players[0].joined = true;
+  for(let i=1;i<game.players.length;i++){ game.players[i].name = 'Player ' + (i+1); game.players[i].joined = true; }
   document.getElementById('gameModeLabel').textContent = 'LOCAL · ' + count + 'P';
   showScreen('game');
   afterStateChange();
@@ -769,13 +820,25 @@ function renderLobby(){
   const list = document.getElementById('playerList');
   list.innerHTML='';
   game.players.forEach((p,i)=>{
-    const d=document.createElement('div'); d.className='lplayer'+(i===0?' host':'');
-    d.innerHTML = `<div class="pdot" style="background:${p.color}"></div>
-      <div class="pname">${escapeHtml(p.name||p.label)}${i===myIndex?' (you)':''}${p.offline?' · left':''}</div>
-      <div class="pbadge">${i===0?'HOST':'GUEST'}</div>`;
+    const d=document.createElement('div');
+    if(p.joined){
+      d.className='lplayer'+(i===0?' host':'');
+      let kick='';
+      if(i!==0){ kick = `<button class="kickBtn" data-idx="${i}">Kick</button>`; }
+      d.innerHTML = `<div class="pdot" style="background:${p.color}"></div>
+        <div class="pname">${escapeHtml(p.name||p.label)}${i===myIndex?' (you)':''}</div>
+        <div class="pbadge">${i===0?'HOST':'GUEST'}</div>${kick}`;
+      const kb = d.querySelector('.kickBtn');
+      if(kb) kb.onclick = ()=>kickPlayer(i);
+    } else {
+      d.className='lplayer empty';
+      d.innerHTML = `<div class="pdot"></div>
+        <div class="pname dim">Empty slot — share link to invite</div>
+        <div class="pbadge">OPEN</div>`;
+    }
     list.appendChild(d);
   });
-  const joined = game.players.filter(p=>!p.offline).length;
+  const joined = game.players.filter(p=>p.joined).length;
   document.getElementById('startBtn').classList.toggle('hidden', joined<2);
   document.getElementById('startBtn').textContent =
     'Start Game (' + joined + '/' + game.players.length + ')';
@@ -784,10 +847,18 @@ function renderLobbyFromData(players){
   const list=document.getElementById('playerList');
   list.innerHTML='';
   players.forEach((p,i)=>{
-    const d=document.createElement('div'); d.className='lplayer'+(p.isHost?' host':'');
-    d.innerHTML = `<div class="pdot" style="background:${p.color}"></div>
-      <div class="pname">${escapeHtml(p.name)}${i===myIndex?' (you)':''}${p.offline?' · left':''}</div>
-      <div class="pbadge">${p.isHost?'HOST':'GUEST'}</div>`;
+    const d=document.createElement('div');
+    if(p.joined){
+      d.className='lplayer'+(p.isHost?' host':'');
+      d.innerHTML = `<div class="pdot" style="background:${p.color}"></div>
+        <div class="pname">${escapeHtml(p.name)}${i===myIndex?' (you)':''}</div>
+        <div class="pbadge">${p.isHost?'HOST':'GUEST'}</div>`;
+    } else {
+      d.className='lplayer empty';
+      d.innerHTML = `<div class="pdot"></div>
+        <div class="pname dim">Empty slot — waiting</div>
+        <div class="pbadge">OPEN</div>`;
+    }
     list.appendChild(d);
   });
 }
