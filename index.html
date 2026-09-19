@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -218,15 +218,15 @@ const PRESETS = {
     {c:4,r:0,gt:'row',goal:8,color:'#f43f5e',dark:'#e11d48',label:'Crimson'}
   ],
   3: [
-    {c:4,r:8,gt:'row',goal:0,color:'#38bdf8',dark:'#0ea5e9',label:'Cyan'},
-    {c:8,r:4,gt:'col',goal:0,color:'#34d399',dark:'#10b981',label:'Emerald'},
-    {c:4,r:0,gt:'row',goal:8,color:'#f43f5e',dark:'#e11d48',label:'Crimson'}
+    {c:4,r:8,gt:'center',goal:4,color:'#38bdf8',dark:'#0ea5e9',label:'Cyan'},
+    {c:8,r:4,gt:'center',goal:4,color:'#34d399',dark:'#10b981',label:'Emerald'},
+    {c:4,r:0,gt:'center',goal:4,color:'#f43f5e',dark:'#e11d48',label:'Crimson'}
   ],
   4: [
-    {c:4,r:8,gt:'row',goal:0,color:'#38bdf8',dark:'#0ea5e9',label:'Cyan'},
-    {c:8,r:4,gt:'col',goal:0,color:'#34d399',dark:'#10b981',label:'Emerald'},
-    {c:4,r:0,gt:'row',goal:8,color:'#f43f5e',dark:'#e11d48',label:'Crimson'},
-    {c:0,r:4,gt:'col',goal:8,color:'#fbbf24',dark:'#f59e0b',label:'Amber'}
+    {c:4,r:8,gt:'center',goal:4,color:'#38bdf8',dark:'#0ea5e9',label:'Cyan'},
+    {c:8,r:4,gt:'center',goal:4,color:'#34d399',dark:'#10b981',label:'Emerald'},
+    {c:4,r:0,gt:'center',goal:4,color:'#f43f5e',dark:'#e11d48',label:'Crimson'},
+    {c:0,r:4,gt:'center',goal:4,color:'#fbbf24',dark:'#f59e0b',label:'Amber'}
   ]
 };
 
@@ -437,14 +437,29 @@ function broadcastState(){
 /* =========================================================
    NETWORKING — GUEST
    ========================================================= */
+let joinTimeout = null;
 function joinRoom(name, code){
   isHost = false; netMode='lobby';
   myName = name;
   setStatus('Connecting to room…','');
+  if(peer){ try{ peer.destroy(); }catch(e){} }
   peer = new Peer();
+  let connected = false;
+
+  joinTimeout = setTimeout(() => {
+    if(!connected){
+      setStatus('Timed out. Ask the host to refresh, then re-open the link.','err');
+
+    }
+  }, 12000);
+
   peer.on('open', () => {
-    hostConn = peer.connect(code, {reliable:true});
+    try { hostConn = peer.connect(code, {reliable:true}); }
+    catch(e){ setStatus('Could not reach host. Check the link.','err'); return; }
+
     hostConn.on('open', () => {
+      connected = true;
+      clearTimeout(joinTimeout);
       hostConn.send({type:'join', name});
       setStatus('Connected! Waiting for host…','ok');
     });
@@ -469,10 +484,13 @@ function joinRoom(name, code){
         afterStateChange();
       }
     });
-    hostConn.on('close', () => { setStatus('Host disconnected.','err'); });
+    hostConn.on('close', () => { if(netMode==='lobby') setStatus('Host disconnected. Refresh to retry.','err'); });
+    hostConn.on('error', () => { if(!connected) setStatus('Connection error. Refresh and try again.','err'); });
   });
   peer.on('error', err => {
-    if(err.type==='peer-unavailable') setStatus('Room not found. Check the link.','err');
+    clearTimeout(joinTimeout);
+    if(err.type==='peer-unavailable') setStatus('Room not found. Host may have closed it. Refresh.','err');
+    else if(err.type==='network' || err.type==='server-error') setStatus('Network issue. Check internet and retry.','err');
     else setStatus('Connection error: '+err.type,'err');
   });
 }
@@ -636,6 +654,7 @@ function pathExists(sc,sr,p){
     const [c,r]=q.shift();
     if(p.gt==='row' && r===p.goal) return true;
     if(p.gt==='col' && c===p.goal) return true;
+    if(p.gt==='center' && c===4 && r===4) return true;
     const nb=[];
     if(blockedUp(c,r)) nb.push([c,r-1]);
     if(blockedDown(c,r)) nb.push([c,r+1]);
@@ -663,7 +682,8 @@ function tryPlaceWall(orient,c,r){
 function isGoalReached(p){
   if(p.offline) return false;
   if(p.gt==='row') return p.r===p.goal;
-  return p.c===p.goal;
+  if(p.gt==='col') return p.c===p.goal;
+  return p.c===4 && p.r===4;
 }
 
 /* =========================================================
