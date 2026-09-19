@@ -968,6 +968,19 @@ function draw(){
     ctx.beginPath(); ctx.moveTo(0,i*cell); ctx.lineTo(boardPx,i*cell); ctx.stroke();
   }
 
+  // center target marker
+  {
+    const cx=(4+0.5)*cell, cy=(4+0.5)*cell;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx,cy,cell*0.30,0,Math.PI*2);
+    ctx.strokeStyle='rgba(251,191,36,0.35)'; ctx.lineWidth=2*DPR; ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx,cy,cell*0.16,0,Math.PI*2);
+    ctx.strokeStyle='rgba(251,191,36,0.45)'; ctx.lineWidth=2*DPR; ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx,cy,cell*0.05,0,Math.PI*2);
+    ctx.fillStyle='rgba(251,191,36,0.8)'; ctx.fill();
+    ctx.restore();
+  }
+
   // valid moves
   if(wallMode===false && game.winner==null && selected && canIAct()){
     const moves=getValidMoves(game.turn);
